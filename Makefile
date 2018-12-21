@@ -3,7 +3,7 @@ DEBUG?=0
 HTSLIB?=-lhts -lm
 
 ifeq ($(DEBUG), 1)
-	CXXFLAGS?=-g -O0
+	CXXFLAGS?=-g -O0 -Wall
 else
 	CXXFLAGS?=-O2 -DNDEBUG
 endif

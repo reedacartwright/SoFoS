@@ -75,7 +75,7 @@ int sofos_main(const char *path, double alpha, double beta, int size,
 std::pair<std::string, std::string> timestamp();
 bool is_ref_missing(bcf1_t* record);
 bool is_allele_missing(const char* a);
-void update_counts(double a, double b, double weight, std::vector<double> *counts);
+//void update_counts(double a, double b, double weight, std::vector<double> *counts);
 void update_bins(double a, double b, double weight, std::vector<double> *counts);
 void fold_histogram(std::vector<double> *counts);
 
@@ -194,6 +194,33 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
 }
 
+
+// Holds Log of Gamma[a+x]/Gamma[a]/Gamma[x+1]
+class LogCoefficient {
+public:
+    LogCoefficient(double a, int sz=0);
+
+    double operator()(int n);
+
+    double Get(int n);
+
+protected:
+    std::vector<double> data_;
+    double alpha_;
+};
+
+class UpdateCounts {
+public:
+    UpdateCounts(double a, double b, int sz=0);
+
+    void operator()(int a, int b, double weight, std::vector<double> *counts);
+
+protected:
+    LogCoefficient alpha_;
+    LogCoefficient beta_;
+    LogCoefficient alphabeta_;
+};
+
 // the main processing function
 int sofos_main(const char *path, double alpha, double beta, int size, double zero, unsigned int flags) {
     assert(path != nullptr);
@@ -228,7 +255,7 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
     if(!record) {
         throw std::invalid_argument("unable to initialize empty vcf record.");
     }
-    size_t nsamples = bcf_hdr_nsamples(header.get());
+    int nsamples = bcf_hdr_nsamples(header.get());
     if(nsamples <= 0) {
         throw std::invalid_argument("input vcf has no samples.");
     }
@@ -252,12 +279,14 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
     auto start = std::chrono::steady_clock::now();
     auto last = start;
 
+    UpdateCounts update_counts{alpha, beta, 2*nsamples+size+1};
+
     // begin reading from the input file
     size_t nsites = 0;
     while(bcf_read(input.get(), header.get(), record.get()) == 0) {
         // identify which allele is ancestral
         // if REFALT is specified, assume 0 is the ancestral allele.
-        int anc = 0;
+        size_t anc = 0;
         if(!(flags & SOFOS_FLAG_REFALT)) {
             // If REFALT is not specified, use the AA tag
             int n = get_string(header.get(), record.get(), "AA", &char_buffer, &char_capacity);
@@ -292,7 +321,8 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
 
         // Update posterior using observed counts, which may be 0 and 0.
         if(flags & SOFOS_FLAG_UNFOLDED) {
-            update_counts(alpha + n_der, beta + n_anc, 1.0, &posterior);
+            //update_counts(alpha + n_der, beta + n_anc, 1.0, &posterior);
+            update_counts(n_der, n_anc, 1.0, &posterior);
         } else {
             // When calculating the folded spectrum, we can't assume that either
             // allele is ancestral. Thus we will update the posterior weighted
@@ -301,9 +331,11 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
 
             double f = (1.0*n_der)/n_total;
             // der is ancestral
-            update_counts(alpha + n_anc, beta + n_der, f, &posterior);
+            //update_counts(alpha + n_anc, beta + n_der, f, &posterior);
+            update_counts(n_anc, n_der, f, &posterior);
             // anc is ancestral
-            update_counts(alpha + n_der, beta + n_anc, 1.0-f, &posterior);
+            //update_counts(alpha + n_der, beta + n_anc, 1.0-f, &posterior);
+            update_counts(n_der, n_anc, 1.0-f, &posterior);
         }
 
         // Update the observed bins based on observed counts, skipping 0 and 0.
@@ -339,12 +371,14 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
     }
 
     // Add zero-count sites (for controlling ascertainment bias)
-    update_counts(alpha, beta+nsamples, zero, &posterior);
+    //update_counts(alpha, beta+nsamples, zero, &posterior);
+    update_counts(0,2*nsamples, zero, &bins);
     update_bins(0, nsamples, zero, &bins);
 
     // calculate prior assuming no data
     std::vector<double> prior(posterior.size(), 0.0);
-    update_counts(alpha, beta, nsites+zero, &prior);
+    //update_counts(alpha, beta, nsites+zero, &prior);
+    update_counts(0,0,nsites+zero,&prior);
 
     // if we are outputting a folded histogram, update the vectors
     if(!(flags & SOFOS_FLAG_UNFOLDED)) {
@@ -359,7 +393,7 @@ int sofos_main(const char *path, double alpha, double beta, int size, double zer
     // output resulting scale
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10);
     std::cout << "Number,Prior,Observed,Posterior\n";
-    for(int i=0;i<posterior.size();++i) {
+    for(size_t i=0;i<posterior.size();++i) {
         std::cout << i
                   << "," << prior[i]
                   << "," << bins[i]
@@ -440,21 +474,21 @@ std::pair<std::string, std::string> timestamp() {
 //
 // To generated the posterior, a = alpha+n_der and b = beta+n_anc
 //
-void update_counts(double a, double b, double weight, std::vector<double> *counts) {
-    assert(counts != nullptr);
-    assert(a > 0.0 && b > 0.0);
-    using std::lgamma;
-    double ab = a+b;
-    int size = counts->size()-1;
-    double scale = lgamma(a)+lgamma(b)+lgamma(ab+size)-lgamma(ab)-lgamma(size+1);
-    for(int k=0;k<=size;++k) {
-        // rescale assuming beta-binomial model
-        double d = lgamma(a+k)+lgamma(b+size-k);
-        d -= lgamma(k+1) + lgamma(size-k+1);
-        d -= scale;
-        (*counts)[k] += weight*exp(d);
-    }
-}
+// void update_counts_z(double a, double b, double weight, std::vector<double> *counts) {
+//     assert(counts != nullptr);
+//     assert(a > 0.0 && b > 0.0);
+//     using std::lgamma;
+//     double ab = a+b;
+//     int size = counts->size()-1;
+//     double scale = lgamma(a)+lgamma(b)+lgamma(ab+size)-lgamma(ab)-lgamma(size+1);
+//     for(int k=0;k<=size;++k) {
+//         // rescale assuming beta-binomial model
+//         double d = lgamma(a+k)+lgamma(b+size-k);
+//         d -= lgamma(k+1) + lgamma(size-k+1);
+//         d -= scale;
+//         (*counts)[k] += weight*exp(d);
+//     }
+// }
 
 // maps a/(a+b) to a bin in the range of [0,N]/N
 // rounds to nearest bin. Thus the bins on the edge may
@@ -478,8 +512,50 @@ void update_bins(double a, double b, double weight, std::vector<double> *bins) {
 inline
 void fold_histogram(std::vector<double> *counts) {
     assert(counts != nullptr);
-    for(int k=0;k<counts->size()/2;++k) {
+    int mid = counts->size()/2;
+    for(int k=0;k<mid;++k) {
         (*counts)[k] += (*counts)[counts->size()-k-1];
     }
     counts->resize((counts->size()+1)/2);
+}
+
+
+LogCoefficient::LogCoefficient(double a, int sz) : data_(sz,0.0), alpha_{a} {
+    for(int i=0;i<sz;++i) {
+        data_[i] = Get(i);
+    }
+}
+
+inline
+double LogCoefficient::operator()(int k) {
+    int b = data_.size();
+    if(k >= b) {
+        data_.resize(k+1);
+        for(int i=b;i<k+1;++i) {
+            data_[i] = Get(i);
+        }
+    }
+    return data_[k];
+}
+
+inline
+double LogCoefficient::Get(int k) {
+    return lgamma(alpha_+k)-lgamma(alpha_)-lgamma(k+1);
+}
+
+UpdateCounts::UpdateCounts(double a, double b, int sz) :
+    alpha_{a,sz}, beta_{b,sz}, alphabeta_{a+b,sz}
+{
+
+}
+
+void UpdateCounts::operator()(int a, int b, double weight, std::vector<double> *counts) {
+    assert(counts != nullptr);
+    assert(a >= 0 && b >= 0);
+    int size = counts->size()-1;
+    for(int k=0;k<=size;++k) {
+        // rescale assuming beta-binomial model
+        double d = alpha_(a+k)+beta_(b+size-k)+alphabeta_(size+a+b);
+        (*counts)[k] += weight*exp(d);
+    }    
 }
