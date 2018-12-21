@@ -555,7 +555,7 @@ void UpdateCounts::operator()(int a, int b, double weight, std::vector<double> *
     int size = counts->size()-1;
     for(int k=0;k<=size;++k) {
         // rescale assuming beta-binomial model
-        double d = alpha_(a+k)+beta_(b+size-k)+alphabeta_(size+a+b);
+        double d = alpha_(a+k)+beta_(b+size-k)-alphabeta_(size+a+b);
         (*counts)[k] += weight*exp(d);
     }    
 }
